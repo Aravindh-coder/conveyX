@@ -7,6 +7,7 @@ import { evaluateConveyorRisk } from '../services/riskEngine.service.js';
 import { checkAndGenerateAlerts } from '../services/alertEngine.service.js';
 import { getIO } from '../services/websocket.service.js';
 import { saveRegistrationData } from '../services/database.service.js';
+import { SensorDataPacket, MotorState, AlignmentState } from '../../../shared/types.js';
 
 const router = Router();
 
@@ -157,15 +158,65 @@ router.get('/hardware/status', (_req, res) => {
 });
 
 
-// ESP32 Telemetry Receiver API – activates hardware mode on first real packet
-router.post('/device-data', (req, res) => {
-  const packet = req.body;
-  if (!packet.deviceId || !packet.vibration || !packet.motor || !packet.alignment) {
+// Helper to parse both flat and nested ESP32 telemetry payloads
+function parseTelemetryPacket(raw: any): SensorDataPacket | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const deviceId = raw.deviceId || raw.machine_id || 'ESP32-CONVEY-01';
+
+  let vibRms = 0.05;
+  if (typeof raw.vibration_rms === 'number') vibRms = raw.vibration_rms;
+  else if (raw.vibration && typeof raw.vibration.rms === 'number') vibRms = raw.vibration.rms;
+
+  let currentAmps = 0.45;
+  if (typeof raw.current_amps === 'number') currentAmps = raw.current_amps;
+  else if (raw.motor && typeof raw.motor.current === 'number') currentAmps = raw.motor.current;
+
+  let rpm = 120.0;
+  if (typeof raw.rpm === 'number') rpm = raw.rpm;
+  else if (raw.motor && typeof raw.motor.rpm === 'number') rpm = raw.motor.rpm;
+
+  let particles = 0;
+  if (typeof raw.particles === 'number') particles = raw.particles;
+  else if (typeof raw.particle_count === 'number') particles = raw.particle_count;
+  else if (raw.jointRip && typeof raw.jointRip.inductiveMetalCount === 'number') particles = raw.jointRip.inductiveMetalCount;
+
+  const timestamp = raw.timestamp || new Date().toISOString();
+
+  return {
+    deviceId,
+    conveyorId: raw.conveyorId || 'CV-01',
+    timestamp,
+    isSimulated: false,
+    motorState: (currentAmps > 2.0 ? 'FAULT' : (rpm > 10 ? 'RUNNING' : 'STOPPED')) as MotorState,
+    vibration: {
+      x: raw.vibration?.x ?? raw.vibration?.rawX ?? 0.02,
+      y: raw.vibration?.y ?? raw.vibration?.rawY ?? 0.03,
+      z: raw.vibration?.z ?? raw.vibration?.rawZ ?? 0.98,
+      rms: vibRms,
+      baselineRms: raw.vibration?.baselineRms ?? 0.15
+    },
+    motor: {
+      current: currentAmps,
+      baselineCurrent: raw.motor?.baselineCurrent ?? 0.45,
+      peakCurrent: raw.motor?.peakCurrent ?? parseFloat((currentAmps * 1.2).toFixed(3)),
+      isOverload: currentAmps > 2.0,
+      isStall: raw.motor?.isStall ?? false
+    },
+    alignment: {
+      leftSensorActive: raw.alignment?.leftSensorActive ?? false,
+      rightSensorActive: raw.alignment?.rightSensorActive ?? false,
+      status: (raw.alignment?.status as AlignmentState) ?? (raw.alignment?.leftSensorActive ? 'MISALIGNED_LEFT' : raw.alignment?.rightSensorActive ? 'MISALIGNED_RIGHT' : 'ALIGNED')
+    }
+  };
+}
+
+// ESP32 Telemetry Receiver API – handles both /device-data and /ingest endpoints
+const handleTelemetry = (req: any, res: any) => {
+  const packet = parseTelemetryPacket(req.body);
+  if (!packet) {
     return res.status(400).json({ error: 'Invalid ESP32 telemetry packet format' });
   }
-
-  packet.timestamp = packet.timestamp || new Date().toISOString();
-  packet.isSimulated = false;
 
   const wasAlreadyConnected = db.isHardwareConnected;
 
@@ -211,7 +262,10 @@ router.post('/device-data', (req, res) => {
     hardwareMode: db.hardwareMode,
     localSafetyActive: db.localSafetyActive
   });
-});
+};
+
+router.post('/device-data', handleTelemetry);
+router.post('/ingest', handleTelemetry);
 
 // ==================================================
 // MOTOR CONTROL ROUTES
