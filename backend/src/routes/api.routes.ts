@@ -256,11 +256,17 @@ const handleTelemetry = (req: any, res: any) => {
     hardwareMode: db.hardwareMode
   });
 
+  const isRunning = db.conveyor.status === 'RUNNING';
+  const isEmergency = db.conveyor.status === 'EMERGENCY_STOP';
+
   return res.json({
     success: true,
     status: 'RECEIVED',
     hardwareMode: db.hardwareMode,
-    localSafetyActive: db.localSafetyActive
+    localSafetyActive: db.localSafetyActive,
+    conveyorStatus: db.conveyor.status,
+    targetSpeed: isRunning ? 200 : 0,
+    relayClosed: !isEmergency
   });
 };
 
