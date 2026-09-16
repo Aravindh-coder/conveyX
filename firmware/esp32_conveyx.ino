@@ -5,12 +5,10 @@
 
 MPU6050 mpu;
 
-// ---------------- WiFi / Backend Config ----------------
+// ---------------- WiFi / Backend ----------------
 const char* WIFI_SSID = "Aravindh_Hotspot";
 const char* WIFI_PASS = "Qtransplant123";
-
-// LAN IP of your host machine running conveyX backend port 4000
-const char* API_URL   = "http://10.42.27.198:4000/api/ingest"; 
+const char* API_URL   = "http://10.42.27.198:4000/api/ingest"; // NOT localhost
 
 // ---------------- Pin Definitions ----------------
 const int IR_TACHO_PIN     = 4;   // D4  - belt/motor RPM counting, interrupt-capable
@@ -25,7 +23,8 @@ const int MOTOR_IN2        = 25;  // L298N direction pin 2
 const int MOTOR_ENA        = 33;  // L298N PWM speed pin
 
 // ---------------- Motor Speed ----------------
-// 0-255 range. Lowered for slow belt movement so particle sensor can reliably detect.
+// 0-255 range. Lowered for slow belt movement so the particle sensor can reliably detect each one.
+// If the belt stalls/buzzes instead of turning at this speed, try 90-120 instead, or gear down mechanically.
 int MOTOR_SPEED = 60;
 
 const int PWM_CHANNEL = 0;
@@ -38,14 +37,14 @@ unsigned long lastSampleTime = 0;
 const unsigned long SAMPLE_INTERVAL = 500; // ms
 
 const float ACS712_SENSITIVITY = 0.185; // V/A for 5A module
-const float ACS712_ZERO_V = 2.5;        // calibrate at no-load
+const float ACS712_ZERO_V = 2.5;        // calibrate at no-load - verify with multimeter
 const float SAFE_CURRENT_MAX = 2.0;     // amps - hardware failsafe
-const float VIBRATION_TRIP = 2.0;       // g's - hardware failsafe
+const float VIBRATION_TRIP = 2.0;       // g's - hardware failsafe, tune after seeing real baseline
 
 // ---------------- Particle Counter ----------------
 volatile unsigned long particleCount = 0;
 volatile unsigned long lastParticleTime = 0;
-const unsigned long PARTICLE_DEBOUNCE_MS = 200; // tune based on particle size + belt speed
+const unsigned long PARTICLE_DEBOUNCE_MS = 200; // tune based on particle size + belt speed - test and adjust
 
 void IRAM_ATTR irPulse() { pulseCount++; }
 
@@ -79,13 +78,9 @@ void connectWiFi() {
 
 void setMotorSpeed(int speed) {
   speed = constrain(speed, 0, 255);
-  digitalWrite(MOTOR_IN1, HIGH);
+  digitalWrite(MOTOR_IN1, HIGH); // fixed direction - swap HIGH/LOW on IN1/IN2 to reverse
   digitalWrite(MOTOR_IN2, LOW);
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcWrite(MOTOR_ENA, speed);
-#else
   ledcWrite(PWM_CHANNEL, speed);
-#endif
 }
 
 void setup() {
@@ -107,13 +102,8 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(IR_TACHO_PIN), irPulse, FALLING);
   attachInterrupt(digitalPinToInterrupt(IR_PARTICLE_PIN), particleDetect, FALLING);
 
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  ledcAttach(MOTOR_ENA, PWM_FREQ, PWM_RES);
-#else
   ledcSetup(PWM_CHANNEL, PWM_FREQ, PWM_RES);
   ledcAttachPin(MOTOR_ENA, PWM_CHANNEL);
-#endif
-
   setMotorSpeed(MOTOR_SPEED);
 
   connectWiFi();
@@ -128,7 +118,7 @@ float readVibrationRMS() {
 
 float readCurrentAmps() {
   int raw = analogRead(ACS712_PIN);
-  float voltage = (raw / 4095.0) * 3.3; // 12-bit ADC, 3.3V ref
+  float voltage = (raw / 4095.0) * 3.3; // 12-bit ADC, 3.3V ref (no divider currently installed)
   return (voltage - ACS712_ZERO_V) / ACS712_SENSITIVITY;
 }
 
@@ -149,7 +139,7 @@ void sendReading(float vibration, float rpm, float current, unsigned long partic
   http.begin(API_URL);
   http.addHeader("Content-Type", "application/json");
 
-  String payload = "{\"machine_id\":\"ESP32-CONVEY-01\",";
+  String payload = "{\"machine_id\":\"M1\",";
   payload += "\"vibration_rms\":" + String(vibration, 4) + ",";
   payload += "\"rpm\":" + String(rpm, 1) + ",";
   payload += "\"current_amps\":" + String(current, 3) + ",";
@@ -179,7 +169,7 @@ void loop() {
 
     float rpm = (pulses / (SAMPLE_INTERVAL / 1000.0)) * 60.0;
 
-    // Hardware-level failsafe - independent of backend
+    // Hardware-level failsafe - independent of button and backend
     if (current > SAFE_CURRENT_MAX || vibration > VIBRATION_TRIP) {
       digitalWrite(RELAY_PIN, LOW);
       digitalWrite(BUZZER_PIN, HIGH);
