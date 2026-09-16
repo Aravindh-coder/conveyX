@@ -439,9 +439,6 @@ router.post('/demo/scenario', (req, res) => {
 
 // Enable simulation mode (browser-controlled – shows clear SIMULATION badge)
 router.post('/simulation/enable', (_req, res) => {
-  if (db.isHardwareConnected) {
-    return res.status(400).json({ error: 'Live hardware is connected. Simulation mode unavailable.' });
-  }
   db.enableSimulation();
   const io = getIO();
   io?.emit('hardware_mode_changed', { hardwareMode: db.hardwareMode });
